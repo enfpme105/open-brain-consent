@@ -1,0 +1,119 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Authorize access to Open Brain</title>
+<style>
+  :root { color-scheme: light dark; }
+  body { font: 16px/1.5 system-ui, sans-serif; max-width: 34rem; margin: 3rem auto; padding: 0 1.25rem; }
+  h1 { font-size: 1.35rem; margin-bottom: .25rem; }
+  .sub { opacity: .7; margin-top: 0; }
+  .card { border: 1px solid rgba(128,128,128,.35); border-radius: 10px; padding: 1rem 1.25rem; margin: 1.5rem 0; }
+  .row { display: flex; justify-content: space-between; gap: 1rem; padding: .3rem 0; }
+  .row span:first-child { opacity: .7; }
+  .row span:last-child { text-align: right; word-break: break-all; }
+  ul { margin: .4rem 0 0; padding-left: 1.2rem; }
+  button { font: inherit; padding: .55rem 1.1rem; border-radius: 8px; cursor: pointer; border: 1px solid rgba(128,128,128,.5); background: transparent; }
+  button.primary { background: #2f7d32; border-color: #2f7d32; color: #fff; }
+  .actions { display: flex; gap: .75rem; }
+  label { display: block; margin: .75rem 0 .25rem; }
+  input { font: inherit; width: 100%; padding: .5rem; border-radius: 8px; border: 1px solid rgba(128,128,128,.5); background: transparent; color: inherit; }
+  .err { color: #c0392b; white-space: pre-wrap; }
+  .muted { opacity: .65; font-size: .9rem; }
+</style>
+</head>
+<body>
+<h1>Open Brain</h1>
+<p class="sub">Authorization request</p>
+<div id="view">Loading...</div>
+
+<script type="module">
+import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+
+const SUPABASE_URL = "https://frpvpjjzngmyvknrapcs.supabase.co";
+const ANON_KEY = "sb_publishable_MM3bIdc9saIgro1ubZGa_Q_Ja6ghVw7";
+const view = document.getElementById("view");
+const authorizationId = new URLSearchParams(location.search).get("authorization_id");
+
+const supabase = createClient(SUPABASE_URL, ANON_KEY);
+
+const esc = (s) => String(s == null ? "" : s).replace(/[&<>"']/g,
+  (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+
+function fail(msg, detail) {
+  view.innerHTML = '<p class="err">' + esc(msg) + "</p>" +
+    (detail ? '<p class="muted">' + esc(detail) + "</p>" : "");
+}
+
+function signInForm(message) {
+  view.innerHTML =
+    (message ? '<p class="err">' + esc(message) + "</p>" : "") +
+    '<p>Sign in to approve this request.</p>' +
+    '<div class="card">' +
+    '<label for="email">Email</label><input id="email" type="email" autocomplete="username">' +
+    '<label for="password">Password</label><input id="password" type="password" autocomplete="current-password">' +
+    '<p></p><button class="primary" id="signin">Sign in</button>' +
+    "</div>";
+  document.getElementById("signin").onclick = async () => {
+    const email = document.getElementById("email").value.trim();
+    const password = document.getElementById("password").value;
+    const { error } = await supabase.auth.signInWithPassword({ email, password });
+    if (error) { signInForm(error.message); return; }
+    start();
+  };
+}
+
+async function decide(kind) {
+  view.innerHTML = "<p>Working...</p>";
+  const fn = kind === "approve"
+    ? supabase.auth.oauth.approveAuthorization(authorizationId)
+    : supabase.auth.oauth.denyAuthorization(authorizationId);
+  const { data, error } = await fn;
+  if (error) { fail("Could not " + kind + " the request.", error.message); return; }
+  if (data && data.redirect_url) { location.href = data.redirect_url; return; }
+  view.innerHTML = "<p>Done. You can close this window.</p>";
+}
+
+function renderConsent(d) {
+  const scopes = (d.scope || "").split(" ").filter(Boolean);
+  view.innerHTML =
+    "<p><strong>" + esc(d.client && d.client.name ? d.client.name : "An application") +
+    "</strong> is requesting access to your Open Brain.</p>" +
+    '<div class="card">' +
+      '<div class="row"><span>Client</span><span>' + esc(d.client && d.client.name) + "</span></div>" +
+      '<div class="row"><span>Returns to</span><span>' + esc(d.redirect_uri) + "</span></div>" +
+      (scopes.length
+        ? "<div><strong>Requested permissions</strong><ul>" +
+          scopes.map((s) => "<li>" + esc(s) + "</li>").join("") + "</ul></div>"
+        : "") +
+    "</div>" +
+    '<div class="actions"><button class="primary" id="approve">Approve</button>' +
+    '<button id="deny">Deny</button></div>' +
+    '<p class="muted">Approving lets this application read and write your stored thoughts.</p>';
+  document.getElementById("approve").onclick = () => decide("approve");
+  document.getElementById("deny").onclick = () => decide("deny");
+}
+
+async function start() {
+  if (!authorizationId) { fail("Missing authorization_id.", "Open this page from a sign-in request, not directly."); return; }
+  if (!supabase.auth.oauth) {
+    fail("This Supabase client version has no OAuth server support.",
+         "The consent page needs a newer @supabase/supabase-js.");
+    return;
+  }
+  const { data: sessionData } = await supabase.auth.getSession();
+  if (!sessionData || !sessionData.session) { signInForm(); return; }
+
+  const { data, error } = await supabase.auth.oauth.getAuthorizationDetails(authorizationId);
+  if (error) { fail("Could not load the authorization request.", error.message); return; }
+  if (!data) { fail("Invalid authorization request."); return; }
+  // Already consented previously: Supabase returns a redirect_url and no authorization_id.
+  if (!("authorization_id" in data) && data.redirect_url) { location.href = data.redirect_url; return; }
+  renderConsent(data);
+}
+
+start();
+</script>
+</body>
+</html>
